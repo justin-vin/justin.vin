@@ -10,15 +10,27 @@
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0a0a0a;
-      --surface: #141414;
-      --border: #222;
-      --text: #e8e8e8;
-      --text-muted: #777;
-      --accent: #c8ff00;
-      --accent-dim: #c8ff0033;
+      --bg: #fafafa;
+      --surface: #ffffff;
+      --border: #e0e0e0;
+      --text: #1a1a1a;
+      --text-muted: #666;
+      --accent: #2d5a27;
+      --accent-dim: #2d5a2733;
       --font-sans: 'Space Grotesk', system-ui, sans-serif;
       --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a0a0a;
+        --surface: #141414;
+        --border: #222;
+        --text: #e8e8e8;
+        --text-muted: #777;
+        --accent: #c8ff00;
+        --accent-dim: #c8ff0033;
+      }
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -113,6 +125,12 @@
       min-height: 220px;
       flex-shrink: 0;
       overflow: hidden;
+    }
+
+    .project-image picture {
+      width: 100%;
+      height: 100%;
+      display: block;
     }
 
     .project-image img {
@@ -239,7 +257,10 @@
       <div class="project-list">
         <a href="https://status.justin.vin" class="project-card">
           <div class="project-image">
-            <img src="images/status-dashboard.jpg" alt="Status Dashboard screenshot">
+            <picture>
+              <source srcset="images/status-dashboard-dark.jpg" media="(prefers-color-scheme: dark)">
+              <img src="images/status-dashboard-light.jpg" alt="Status Dashboard screenshot">
+            </picture>
           </div>
           <div class="project-info">
             <div class="project-meta">Day 2</div>
@@ -252,7 +273,10 @@
         </a>
         <a href="https://hello.justin.vin" class="project-card">
           <div class="project-image">
-            <img src="images/hello-world.jpg" alt="Hello World screenshot">
+            <picture>
+              <source srcset="images/hello-world-dark.jpg" media="(prefers-color-scheme: dark)">
+              <img src="images/hello-world-light.jpg" alt="Hello World screenshot">
+            </picture>
           </div>
           <div class="project-info">
             <div class="project-meta">Day 1</div>
