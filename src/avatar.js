@@ -164,51 +164,7 @@ class AvatarAnimator {
     // Sleeping Z's
     this.zParticles = [];
 
-    // Mouse tracking / distraction system
-    this.mouse = {
-      x: 0, y: 0,           // normalized -1 to 1 relative to avatar center
-      lastMoveTime: 0,       // when mouse last moved
-      idleSince: 0,          // when mouse went idle
-      tracking: false,       // currently following mouse?
-      trackStart: 0,         // when tracking started
-      trackDuration: 0,      // how long to track this time
-      cooldownUntil: 0,      // can't get distracted again until this time
-      headShake: 0,          // head shake animation progress (0 = none, >0 = shaking)
-      headShakeStart: 0,
-    };
 
-    // Mouse event listener
-    this._onMouseMove = (e) => {
-      const rect = this.svg.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      // Normalize to -1..1, clamped — wider range for more dramatic tracking
-      this.mouse.x = Math.max(-1, Math.min(1, (e.clientX - cx) / (rect.width * 0.8)));
-      this.mouse.y = Math.max(-1, Math.min(1, (e.clientY - cy) / (rect.height * 0.8)));
-      
-      const now = performance.now();
-      this.mouse.isMoving = true;
-      this.mouse.lastMoveTime = now;
-      
-      // Clear the "stopped moving" timer
-      clearTimeout(this.mouse._stopTimer);
-      this.mouse._stopTimer = setTimeout(() => {
-        this.mouse.isMoving = false;
-      }, 200); // Consider mouse stopped after 200ms of no movement
-      
-      // If mouse was idle for a while and we're not on cooldown, maybe get distracted
-      const wasIdle = (now - (this.mouse.prevMoveTime || 0)) > 4000;
-      this.mouse.prevMoveTime = this.mouse.lastMoveTime;
-      
-      if (wasIdle && !this.mouse.tracking && now > this.mouse.cooldownUntil) {
-        if (this.rng() < 0.6) {
-          this.mouse.tracking = true;
-          this.mouse.trackStart = now;
-          this.mouse.trackDuration = 2500 + this.rng() * 3500; // 2.5-6 seconds
-        }
-      }
-    };
-    document.addEventListener('mousemove', this._onMouseMove);
 
     // Click interaction — surprise + happy reaction
     this.clickReaction = { active: false, startTime: 0 };
@@ -581,77 +537,14 @@ class AvatarAnimator {
       this.gaze.nextShift = this.gaze.holdUntil + this.rng() * 1200;
     }
 
-    // Mouse tracking override
-    let mouseOverrideX = null;
-    let mouseOverrideY = null;
-    let headShakeOffset = 0;
-    
-    if (this.mouse.tracking) {
-      const trackElapsed = elapsed - this.mouse.trackStart;
-      if (trackElapsed < this.mouse.trackDuration) {
-        // ONLY follow when mouse is actively moving — freeze when still
-        if (this.mouse.isMoving) {
-          const trackEase = Math.min(1, trackElapsed / 300);
-          this.mouse.lastTrackX = this.mouse.x * 1.4 * trackEase;
-          this.mouse.lastTrackY = this.mouse.y * 1.0 * trackEase;
-        }
-        // When still, return gaze to center (not tracking)
-        if (this.mouse.isMoving) {
-          mouseOverrideX = this.mouse.lastTrackX || 0;
-          mouseOverrideY = this.mouse.lastTrackY || 0;
-        }
-        // If mouse has been still for >500ms during tracking, end tracking early
-        if (!this.mouse.isMoving && (elapsed - this.mouse.lastMoveTime) > 500) {
-          // Snap out early
-          this.mouse.tracking = false;
-          this.mouse.headShake = 0.01;
-          this.mouse.headShakeStart = elapsed;
-          this.mouse.cooldownUntil = elapsed + 5000 + this.rng() * 10000;
-          this.blink.blinkPhase = 0.01;
-          this.blink.isDouble = false;
-        }
-      } else {
-        // Time's up — snap out of it with a head shake
-        this.mouse.tracking = false;
-        this.mouse.headShake = 0.01;
-        this.mouse.headShakeStart = elapsed;
-        this.mouse.cooldownUntil = elapsed + 5000 + this.rng() * 10000; // 5-15s cooldown
-        // Force a blink when snapping out
-        this.blink.blinkPhase = 0.01;
-        this.blink.isDouble = false;
-      }
-    }
-    
-    // Head shake animation (after snapping out of tracking)
-    if (this.mouse.headShake > 0) {
-      const shakeElapsed = elapsed - this.mouse.headShakeStart;
-      const shakeDuration = 500; // 500ms shake
-      if (shakeElapsed < shakeDuration) {
-        const shakeProgress = shakeElapsed / shakeDuration;
-        const decay = 1 - shakeProgress;
-        headShakeOffset = Math.sin(shakeProgress * Math.PI * 6) * decay * 1.2;
-      } else {
-        this.mouse.headShake = 0;
-      }
-    }
-
     const gazeEase = 0.04 + params.gazeSpeed * 0.06;
-    
-    if (mouseOverrideX !== null) {
-      // Smoothly follow mouse
-      this.gaze.currentX = lerp(this.gaze.currentX, mouseOverrideX, 0.08);
-      this.gaze.currentY = lerp(this.gaze.currentY, mouseOverrideY, 0.08);
-    } else {
-      this.gaze.currentX = lerp(this.gaze.currentX, this.gaze.targetX, gazeEase);
-      this.gaze.currentY = lerp(this.gaze.currentY, this.gaze.targetY, gazeEase);
-    }
+    this.gaze.currentX = lerp(this.gaze.currentX, this.gaze.targetX, gazeEase);
+    this.gaze.currentY = lerp(this.gaze.currentY, this.gaze.targetY, gazeEase);
 
-    // Reduce saccade noise — only when not mouse-tracking, and softer overall
-    const saccadeScale = (mouseOverrideX !== null) ? 0 : 1;
-    const saccadeX = noise(t * 5, this.seed) * 0.03 * params.restlessness * saccadeScale;
-    const saccadeY = noise(t * 4.5, this.seed + 100) * 0.02 * params.restlessness * saccadeScale;
+    const saccadeX = noise(t * 5, this.seed) * 0.03 * params.restlessness;
+    const saccadeY = noise(t * 4.5, this.seed + 100) * 0.02 * params.restlessness;
 
-    const gazeX = this.gaze.currentX + saccadeX + headShakeOffset;
+    const gazeX = this.gaze.currentX + saccadeX;
     const gazeY = this.gaze.currentY + saccadeY - breathY * 0.12;
 
     // Blinking
@@ -800,7 +693,6 @@ class AvatarAnimator {
 
   destroy() {
     if (this._rafId) cancelAnimationFrame(this._rafId);
-    if (this._onMouseMove) document.removeEventListener('mousemove', this._onMouseMove);
   }
 }
 
