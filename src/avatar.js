@@ -1,0 +1,808 @@
+/**
+ * Justin's Status Avatar — ported from known.life avatar system
+ * Fixed identity: steel blue, dot eyes, arched brows
+ * Emotion states driven by system status
+ */
+
+// ── Fixed Identity ──────────────────────────────────────────────────
+
+const STEEL_BLUE = {
+  light: { bg: '#4682B4', fg: '#FFFFFF' },
+  dark:  { bg: '#2C5F8A', fg: '#E8EEF4' },
+};
+
+const DEAD_PALETTE = {
+  light: { bg: '#7A8A96', fg: '#C0C8D0' },
+  dark:  { bg: '#3A4248', fg: '#8A9098' },
+};
+
+const TRAITS = {
+  eyeShape: 'oval',
+  brows: 'arched',
+  eyeSpacing: 8,
+  eyeSize: 1.0,
+  eyeY: -0.5,
+  // known.life oval eye dimensions, scaled up
+  eyeRx: 3.3,
+  eyeRy: 4.7,
+};
+
+// ── Animation Math ──────────────────────────────────────────────────
+
+function noise(t, seed) {
+  return (
+    Math.sin(t * 1.0 + seed) * 0.5 +
+    Math.sin(t * 2.3 + seed * 1.7) * 0.3 +
+    Math.sin(t * 4.1 + seed * 0.3) * 0.2
+  );
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function smoothstep(t) {
+  return t * t * (3 - 2 * t);
+}
+
+function xorshift(seed) {
+  let s = seed | 1;
+  return () => {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    return (s >>> 0) / 4294967296;
+  };
+}
+
+// ── Emotion States ──────────────────────────────────────────────────
+
+const REST_STATE = {
+  gazeX: 0, gazeY: 0, lidClose: 0, browRaise: 0,
+  browTilt: 0, squint: 0, breathY: 0,
+};
+
+/**
+ * System status → emotion mapping
+ * @param {string} status - 'active'|'idle'|'sleeping'|'deep_sleep'|'dead'|'working'|'error'
+ * @param {number} elapsed - ms since animation start
+ * @param {number} t - seconds since animation start
+ * @param {function} rng - seeded random
+ */
+function getEmotionParams(status) {
+  switch (status) {
+    case 'active':
+      return {
+        breathSpeed: 4, restlessness: 0.8, blinkRate: 3.5,
+        gazeSpeed: 0.7, expressiveness: 0.6, squintBase: 0,
+        browBase: 0, browTiltBase: 0, lidBase: 0,
+        eventFrequency: 0.7,
+      };
+    case 'idle':
+      return {
+        breathSpeed: 5.5, restlessness: 0.3, blinkRate: 4.5,
+        gazeSpeed: 0.3, expressiveness: 0.3, squintBase: 0,
+        browBase: -0.1, browTiltBase: 0, lidBase: 0.05,
+        eventFrequency: 0.3,
+      };
+    case 'sleeping':
+      return {
+        breathSpeed: 7, restlessness: 0, blinkRate: 0,
+        gazeSpeed: 0, expressiveness: 0, squintBase: 0,
+        browBase: -0.2, browTiltBase: 0, lidBase: 1.0,
+        eventFrequency: 0, sleeping: true,
+      };
+    case 'deep_sleep':
+      return {
+        breathSpeed: 8, restlessness: 0, blinkRate: 0,
+        gazeSpeed: 0, expressiveness: 0, squintBase: 0,
+        browBase: -0.1, browTiltBase: 0, lidBase: 1.0,
+        eventFrequency: 0, sleeping: true, deep: true,
+      };
+    case 'dead':
+      return { dead: true };
+    case 'working':
+      return {
+        breathSpeed: 3.5, restlessness: 0.5, blinkRate: 3.0,
+        gazeSpeed: 0.9, expressiveness: 0.4, squintBase: 0.15,
+        browBase: -0.15, browTiltBase: 0, lidBase: 0,
+        eventFrequency: 0.2,
+      };
+    case 'error':
+      return {
+        breathSpeed: 3, restlessness: 0.6, blinkRate: 2.5,
+        gazeSpeed: 0.5, expressiveness: 0.5, squintBase: 0.05,
+        browBase: 0.1, browTiltBase: 0.3, lidBase: 0,
+        eventFrequency: 0.4,
+      };
+    default:
+      return getEmotionParams('active');
+  }
+}
+
+// ── Avatar Animator ─────────────────────────────────────────────────
+
+class AvatarAnimator {
+  constructor(svgElement, options = {}) {
+    this.svg = svgElement;
+    this.status = options.status || 'active';
+    this.targetStatus = this.status;
+    this.transitionProgress = 1;
+    this.seed = 42;
+    this.rng = xorshift(this.seed);
+    this.startTime = performance.now();
+    this.lastFrame = 0;
+    this.currentState = { ...REST_STATE };
+    this.prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    this.isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+    // Animation sub-states
+    this.blink = {
+      nextBlink: this.rng() * 3500,
+      blinkPhase: 0,
+      isDouble: false,
+      doublePhase: 0,
+    };
+    this.gaze = {
+      targetX: 0, targetY: 0, currentX: 0, currentY: 0,
+      nextShift: this.rng() * 1500, holdUntil: 0,
+    };
+    this.expr = {
+      targetBrow: 0, targetSquint: 0, targetBrowTilt: 0,
+      currentBrow: 0, currentSquint: 0, currentBrowTilt: 0,
+      nextChange: 2000 + this.rng() * 4000,
+    };
+    this.event = {
+      active: false, type: '', startTime: 0, duration: 0,
+      nextEvent: 5000 + this.rng() * 10000,
+    };
+    this.sleepTwitch = {
+      nextTwitch: 5000 + this.rng() * 12000,
+      gx: 0, gy: 0, brow: 0, squint: 0,
+    };
+
+    // Sleeping Z's
+    this.zParticles = [];
+
+    // Mouse tracking / distraction system
+    this.mouse = {
+      x: 0, y: 0,           // normalized -1 to 1 relative to avatar center
+      lastMoveTime: 0,       // when mouse last moved
+      idleSince: 0,          // when mouse went idle
+      tracking: false,       // currently following mouse?
+      trackStart: 0,         // when tracking started
+      trackDuration: 0,      // how long to track this time
+      cooldownUntil: 0,      // can't get distracted again until this time
+      headShake: 0,          // head shake animation progress (0 = none, >0 = shaking)
+      headShakeStart: 0,
+    };
+
+    // Mouse event listener
+    this._onMouseMove = (e) => {
+      const rect = this.svg.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      // Normalize to -1..1, clamped — wider range for more dramatic tracking
+      this.mouse.x = Math.max(-1, Math.min(1, (e.clientX - cx) / (rect.width * 0.8)));
+      this.mouse.y = Math.max(-1, Math.min(1, (e.clientY - cy) / (rect.height * 0.8)));
+      
+      const now = performance.now();
+      this.mouse.isMoving = true;
+      this.mouse.lastMoveTime = now;
+      
+      // Clear the "stopped moving" timer
+      clearTimeout(this.mouse._stopTimer);
+      this.mouse._stopTimer = setTimeout(() => {
+        this.mouse.isMoving = false;
+      }, 200); // Consider mouse stopped after 200ms of no movement
+      
+      // If mouse was idle for a while and we're not on cooldown, maybe get distracted
+      const wasIdle = (now - (this.mouse.prevMoveTime || 0)) > 4000;
+      this.mouse.prevMoveTime = this.mouse.lastMoveTime;
+      
+      if (wasIdle && !this.mouse.tracking && now > this.mouse.cooldownUntil) {
+        if (this.rng() < 0.6) {
+          this.mouse.tracking = true;
+          this.mouse.trackStart = now;
+          this.mouse.trackDuration = 2500 + this.rng() * 3500; // 2.5-6 seconds
+        }
+      }
+    };
+    document.addEventListener('mousemove', this._onMouseMove);
+
+    // Click interaction — surprise + happy reaction
+    this.clickReaction = { active: false, startTime: 0 };
+    this._onClick = () => {
+      if (this.clickReaction.active) return;
+      this.clickReaction.active = true;
+      this.clickReaction.startTime = performance.now();
+    };
+    // Attach to bounce container or wrapper
+    const clickTarget = document.getElementById('avatar-bounce') || this.svg.parentElement;
+    if (clickTarget) clickTarget.addEventListener('click', this._onClick);
+
+    // Listen for scheme changes
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+      this.isDark = e.matches;
+      this._updatePalette();
+    });
+
+    this._buildSVG();
+
+    if (!this.prefersReducedMotion) {
+      this._startLoop();
+    } else {
+      this._renderStatic();
+    }
+  }
+
+  setStatus(newStatus) {
+    if (newStatus === this.status && this.transitionProgress >= 1) return;
+    this.targetStatus = newStatus;
+    this.transitionProgress = 0;
+    if (newStatus === 'dead' || this.status === 'dead') {
+      this._updatePalette();
+    }
+    this.status = newStatus;
+  }
+
+  _getPalette() {
+    if (this.status === 'dead' || this.targetStatus === 'dead') {
+      return this.isDark ? DEAD_PALETTE.dark : DEAD_PALETTE.light;
+    }
+    return this.isDark ? STEEL_BLUE.dark : STEEL_BLUE.light;
+  }
+
+  _updatePalette() {
+    const pal = this._getPalette();
+    if (this.bgCircle) this.bgCircle.setAttribute('fill', pal.bg);
+  }
+
+  _buildSVG() {
+    const svg = this.svg;
+    svg.setAttribute('viewBox', '0 0 64 64');
+    svg.innerHTML = '';
+
+    const pal = this._getPalette();
+
+    // Background rect (fills entire SVG, CSS handles corner rounding)
+    this.bgCircle = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    this.bgCircle.setAttribute('x', '0');
+    this.bgCircle.setAttribute('y', '0');
+    this.bgCircle.setAttribute('width', '64');
+    this.bgCircle.setAttribute('height', '64');
+    this.bgCircle.setAttribute('fill', pal.bg);
+    svg.appendChild(this.bgCircle);
+
+    // Face group (for breathing transform)
+    this.faceGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    svg.appendChild(this.faceGroup);
+
+    // Eyes container
+    this.leftEyeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    this.rightEyeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    this.faceGroup.appendChild(this.leftEyeGroup);
+    this.faceGroup.appendChild(this.rightEyeGroup);
+
+    // Brows
+    this.leftBrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    this.rightBrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    this.leftBrow.setAttribute('fill', 'none');
+    this.leftBrow.setAttribute('stroke-width', '1.3');
+    this.leftBrow.setAttribute('stroke-linecap', 'round');
+    this.leftBrow.setAttribute('opacity', '0.50');
+    this.rightBrow.setAttribute('fill', 'none');
+    this.rightBrow.setAttribute('stroke-width', '1.3');
+    this.rightBrow.setAttribute('stroke-linecap', 'round');
+    this.rightBrow.setAttribute('opacity', '0.50');
+    this.faceGroup.appendChild(this.leftBrow);
+    this.faceGroup.appendChild(this.rightBrow);
+
+    // Z's container (outside face group so they don't breathe)
+    this.zGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    svg.appendChild(this.zGroup);
+  }
+
+  _renderEyes(state, fg) {
+    const centerX = 32;
+    const centerY = 30 + TRAITS.eyeY;
+    const leftX = centerX - TRAITS.eyeSpacing;
+    const rightX = centerX + TRAITS.eyeSpacing;
+    const size = TRAITS.eyeSize;
+
+    const gazeX = state.gazeX * 2.5;
+    const gazeY = state.gazeY * 2;
+    const lidScale = 1 - state.lidClose;
+    const squintScale = 1 - state.squint * 0.4;
+    const yScale = Math.max(lidScale * squintScale, 0.05);
+
+    // Check if dead (X eyes)
+    if (this.status === 'dead') {
+      this._renderXEyes(leftX, rightX, centerY, size, fg);
+      return;
+    }
+
+    // If nearly fully closed, render as lines
+    if (yScale < 0.1) {
+      this._renderClosedEyes(leftX, rightX, centerY, size, fg);
+      return;
+    }
+
+    // Oval eyes — known.life first lifeform style (rx:2.8 ry:4.0), white fill
+    const rx = (TRAITS.eyeRx || 2.8);
+    const ry = (TRAITS.eyeRy || 4.0) * yScale;
+    this.leftEyeGroup.innerHTML = '';
+    this.rightEyeGroup.innerHTML = '';
+
+    const gazeAmplify = 1.8;
+    const leftEye = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse');
+    leftEye.setAttribute('rx', String(rx));
+    leftEye.setAttribute('ry', String(ry));
+    leftEye.setAttribute('fill', fg);
+    leftEye.setAttribute('cx', String(gazeX * gazeAmplify));
+    leftEye.setAttribute('cy', String(gazeY * gazeAmplify * yScale));
+    this.leftEyeGroup.setAttribute('transform', `translate(${leftX},${centerY}) scale(${size})`);
+    this.leftEyeGroup.appendChild(leftEye);
+
+    const rightEye = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse');
+    rightEye.setAttribute('rx', String(rx));
+    rightEye.setAttribute('ry', String(ry));
+    rightEye.setAttribute('fill', fg);
+    rightEye.setAttribute('cx', String(gazeX * gazeAmplify));
+    rightEye.setAttribute('cy', String(gazeY * gazeAmplify * yScale));
+    this.rightEyeGroup.setAttribute('transform', `translate(${rightX},${centerY}) scale(${size})`);
+    this.rightEyeGroup.appendChild(rightEye);
+  }
+
+  _renderClosedEyes(leftX, rightX, centerY, size, fg) {
+    this.leftEyeGroup.innerHTML = '';
+    this.rightEyeGroup.innerHTML = '';
+
+    for (const [group, x] of [[this.leftEyeGroup, leftX], [this.rightEyeGroup, rightX]]) {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', String(x - 3.5 * size));
+      line.setAttribute('y1', String(centerY));
+      line.setAttribute('x2', String(x + 3.5 * size));
+      line.setAttribute('y2', String(centerY));
+      line.setAttribute('stroke', fg);
+      line.setAttribute('stroke-width', '1.8');
+      line.setAttribute('stroke-linecap', 'round');
+      group.setAttribute('transform', '');
+      group.appendChild(line);
+    }
+  }
+
+  _renderXEyes(leftX, rightX, centerY, size, fg) {
+    this.leftEyeGroup.innerHTML = '';
+    this.rightEyeGroup.innerHTML = '';
+
+    const r = 3 * size;
+    for (const [group, x] of [[this.leftEyeGroup, leftX], [this.rightEyeGroup, rightX]]) {
+      group.setAttribute('transform', '');
+      const l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l1.setAttribute('x1', String(x - r)); l1.setAttribute('y1', String(centerY - r));
+      l1.setAttribute('x2', String(x + r)); l1.setAttribute('y2', String(centerY + r));
+      l1.setAttribute('stroke', fg); l1.setAttribute('stroke-width', '1.8');
+      l1.setAttribute('stroke-linecap', 'round');
+      group.appendChild(l1);
+      const l2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l2.setAttribute('x1', String(x + r)); l2.setAttribute('y1', String(centerY - r));
+      l2.setAttribute('x2', String(x - r)); l2.setAttribute('y2', String(centerY + r));
+      l2.setAttribute('stroke', fg); l2.setAttribute('stroke-width', '1.8');
+      l2.setAttribute('stroke-linecap', 'round');
+      group.appendChild(l2);
+    }
+  }
+
+  _renderBrows(state, fg) {
+    if (this.status === 'dead') {
+      this.leftBrow.setAttribute('d', '');
+      this.rightBrow.setAttribute('d', '');
+      return;
+    }
+
+    const centerX = 32;
+    const centerY = 30 + TRAITS.eyeY;
+    const leftX = centerX - TRAITS.eyeSpacing;
+    const rightX = centerX + TRAITS.eyeSpacing;
+    const size = TRAITS.eyeSize;
+    const browY = centerY - 8;
+
+    const tiltOffset = (state.browTilt || 0);
+    const raise = state.browRaise * 2.5;
+
+    // Arched brows
+    const lRaise = raise + tiltOffset * 2.5;
+    const rRaise = raise - tiltOffset * 2.5;
+
+    this.leftBrow.setAttribute('stroke', fg);
+    this.leftBrow.setAttribute('d',
+      `M${leftX - 4 * size} ${browY + 1 - lRaise} Q${leftX} ${browY - 3 - lRaise} ${leftX + 4 * size} ${browY + 1 - lRaise}`
+    );
+    this.rightBrow.setAttribute('stroke', fg);
+    this.rightBrow.setAttribute('d',
+      `M${rightX - 4 * size} ${browY + 1 - rRaise} Q${rightX} ${browY - 3 - rRaise} ${rightX + 4 * size} ${browY + 1 - rRaise}`
+    );
+  }
+
+  _renderZs(elapsed) {
+    const params = getEmotionParams(this.status);
+    if (!params.sleeping) {
+      this.zGroup.innerHTML = '';
+      this.zParticles = [];
+      return;
+    }
+
+    // Spawn new Z every ~2s
+    if (this.zParticles.length === 0 || elapsed - this.zParticles[this.zParticles.length - 1].spawn > 2000) {
+      this.zParticles.push({
+        spawn: elapsed,
+        x: 44 + (Math.random() - 0.5) * 4,
+        size: 0.6 + Math.random() * 0.4,
+      });
+    }
+
+    // Remove old
+    this.zParticles = this.zParticles.filter(z => elapsed - z.spawn < 4000);
+
+    this.zGroup.innerHTML = '';
+    for (const z of this.zParticles) {
+      const age = (elapsed - z.spawn) / 4000;
+      const y = 20 - age * 20;
+      const opacity = age < 0.2 ? age * 5 : age > 0.7 ? (1 - age) / 0.3 : 1;
+      const scale = z.size * (0.5 + age * 0.5);
+
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', String(z.x + age * 6));
+      text.setAttribute('y', String(y));
+      text.setAttribute('font-size', String(6 * scale));
+      text.setAttribute('font-weight', '700');
+      text.setAttribute('font-family', 'system-ui, sans-serif');
+      text.setAttribute('fill', this._getPalette().fg);
+      text.setAttribute('opacity', String(opacity * 0.7));
+      text.textContent = 'z';
+      this.zGroup.appendChild(text);
+    }
+  }
+
+  _tick(now) {
+    const elapsed = now - this.startTime;
+    const t = elapsed / 1000;
+    const params = getEmotionParams(this.status);
+
+    if (params.dead) {
+      this._updatePalette();
+      const fg = this._getPalette().fg;
+      this.faceGroup.setAttribute('transform', '');
+      this._renderEyes(REST_STATE, fg);
+      this._renderBrows(REST_STATE, fg);
+      this._renderZs(elapsed);
+      return;
+    }
+
+    // Sleeping animation
+    if (params.sleeping) {
+      const st = this.sleepTwitch;
+      if (!params.deep && elapsed > st.nextTwitch) {
+        st.gx = (this.rng() - 0.5) * 0.3;
+        st.gy = (this.rng() - 0.5) * 0.2;
+        if (this.rng() < 0.3) {
+          st.brow = (this.rng() - 0.5) * 0.25;
+          st.squint = this.rng() * 0.15;
+        }
+        st.nextTwitch = elapsed + 4000 + this.rng() * 12000;
+      }
+      st.gx *= 0.94; st.gy *= 0.94;
+      st.brow *= 0.96; st.squint *= 0.96;
+
+      const sighBoost = Math.sin(t / 29 * Math.PI * 2) > 0.88 ? 0.4 : 0;
+      const breathY = Math.sin(t / params.breathSpeed * Math.PI * 2) * (1.0 + sighBoost);
+
+      this.currentState = {
+        gazeX: st.gx, gazeY: st.gy,
+        lidClose: 1 - Math.abs(st.gx) * 0.12,
+        browRaise: st.brow, browTilt: 0,
+        squint: Math.max(0, st.squint), breathY,
+      };
+    } else {
+      // Active animation
+      this._tickActive(elapsed, t, params);
+    }
+
+    // Smooth transition
+    if (this.transitionProgress < 1) {
+      this.transitionProgress = Math.min(1, this.transitionProgress + 0.02);
+    }
+
+    const fg = this._getPalette().fg;
+
+    // Body animation: breathing moves face group, bounce/sway moves the whole wrapper
+    let bodyX = 0;
+    let bodyY = 0;
+    const ep = getEmotionParams(this.status);
+    if (!ep.dead && !ep.sleeping) {
+      // Gentle lateral sway — always visible
+      bodyX = Math.sin(t * 0.5) * 2.0 * (ep.restlessness || 0.5);
+      // Breathing bounce
+      bodyY = Math.sin(t * 0.8) * 1.0;
+      // Occasional bigger hop — triggers every ~5-8 seconds
+      const hopPhase = Math.sin(t * 0.7) * Math.sin(t * 0.23);
+      if (hopPhase > 0.6) {
+        const hopAmount = (hopPhase - 0.6) * 2.5; // 0 to 1
+        bodyY += -4.0 * hopAmount * (ep.restlessness || 0.5);
+      }
+    }
+    // Click jump
+    if (this.clickReaction.active) {
+      const clickElapsed = elapsed - this.clickReaction.startTime;
+      if (clickElapsed < 400) {
+        const jumpPhase = clickElapsed / 400;
+        bodyY += -8 * Math.sin(jumpPhase * Math.PI); // 8px jump arc
+      }
+    }
+
+    // Apply bounce to the outer bounce container (moves the whole square)
+    const bounceEl = document.getElementById('avatar-bounce');
+    if (bounceEl) {
+      bounceEl.style.transform = `translate(${bodyX}px, ${bodyY}px)`;
+    }
+    // Face group only gets breathing
+    this.faceGroup.setAttribute('transform', `translate(0,${this.currentState.breathY})`);
+    this._renderEyes(this.currentState, fg);
+    this._renderBrows(this.currentState, fg);
+    this._renderZs(elapsed);
+  }
+
+  _tickActive(elapsed, t, params) {
+    // Breathing
+    const breathY = Math.sin(t / params.breathSpeed * Math.PI * 2) * 0.8;
+
+    // Gaze — intentional movements, hold longer, less jitter
+    if (!this.mouse.tracking && elapsed > this.gaze.nextShift && elapsed > this.gaze.holdUntil) {
+      const r = this.rng();
+      if (r < 0.25) {
+        // Look somewhere specific
+        this.gaze.targetX = (this.rng() - 0.5) * 1.4 * params.restlessness;
+        this.gaze.targetY = (this.rng() - 0.5) * 0.8 * params.restlessness;
+        this.gaze.holdUntil = elapsed + 1000 + this.rng() * 2500;
+      } else if (r < 0.5) {
+        // Return to center-ish
+        this.gaze.targetX = (this.rng() - 0.5) * 0.2;
+        this.gaze.targetY = (this.rng() - 0.5) * 0.15;
+        this.gaze.holdUntil = elapsed + 1500 + this.rng() * 3000;
+      } else {
+        // Small drift from current position
+        this.gaze.targetX += (this.rng() - 0.5) * 0.3 * params.restlessness;
+        this.gaze.targetY += (this.rng() - 0.5) * 0.2 * params.restlessness;
+        this.gaze.targetX = Math.max(-0.9, Math.min(0.9, this.gaze.targetX));
+        this.gaze.targetY = Math.max(-0.7, Math.min(0.7, this.gaze.targetY));
+        this.gaze.holdUntil = elapsed + 800 + this.rng() * 1500;
+      }
+      this.gaze.nextShift = this.gaze.holdUntil + this.rng() * 1200;
+    }
+
+    // Mouse tracking override
+    let mouseOverrideX = null;
+    let mouseOverrideY = null;
+    let headShakeOffset = 0;
+    
+    if (this.mouse.tracking) {
+      const trackElapsed = elapsed - this.mouse.trackStart;
+      if (trackElapsed < this.mouse.trackDuration) {
+        // ONLY follow when mouse is actively moving — freeze when still
+        if (this.mouse.isMoving) {
+          const trackEase = Math.min(1, trackElapsed / 300);
+          this.mouse.lastTrackX = this.mouse.x * 1.4 * trackEase;
+          this.mouse.lastTrackY = this.mouse.y * 1.0 * trackEase;
+        }
+        // When still, return gaze to center (not tracking)
+        if (this.mouse.isMoving) {
+          mouseOverrideX = this.mouse.lastTrackX || 0;
+          mouseOverrideY = this.mouse.lastTrackY || 0;
+        }
+        // If mouse has been still for >500ms during tracking, end tracking early
+        if (!this.mouse.isMoving && (elapsed - this.mouse.lastMoveTime) > 500) {
+          // Snap out early
+          this.mouse.tracking = false;
+          this.mouse.headShake = 0.01;
+          this.mouse.headShakeStart = elapsed;
+          this.mouse.cooldownUntil = elapsed + 5000 + this.rng() * 10000;
+          this.blink.blinkPhase = 0.01;
+          this.blink.isDouble = false;
+        }
+      } else {
+        // Time's up — snap out of it with a head shake
+        this.mouse.tracking = false;
+        this.mouse.headShake = 0.01;
+        this.mouse.headShakeStart = elapsed;
+        this.mouse.cooldownUntil = elapsed + 5000 + this.rng() * 10000; // 5-15s cooldown
+        // Force a blink when snapping out
+        this.blink.blinkPhase = 0.01;
+        this.blink.isDouble = false;
+      }
+    }
+    
+    // Head shake animation (after snapping out of tracking)
+    if (this.mouse.headShake > 0) {
+      const shakeElapsed = elapsed - this.mouse.headShakeStart;
+      const shakeDuration = 500; // 500ms shake
+      if (shakeElapsed < shakeDuration) {
+        const shakeProgress = shakeElapsed / shakeDuration;
+        const decay = 1 - shakeProgress;
+        headShakeOffset = Math.sin(shakeProgress * Math.PI * 6) * decay * 1.2;
+      } else {
+        this.mouse.headShake = 0;
+      }
+    }
+
+    const gazeEase = 0.04 + params.gazeSpeed * 0.06;
+    
+    if (mouseOverrideX !== null) {
+      // Smoothly follow mouse
+      this.gaze.currentX = lerp(this.gaze.currentX, mouseOverrideX, 0.08);
+      this.gaze.currentY = lerp(this.gaze.currentY, mouseOverrideY, 0.08);
+    } else {
+      this.gaze.currentX = lerp(this.gaze.currentX, this.gaze.targetX, gazeEase);
+      this.gaze.currentY = lerp(this.gaze.currentY, this.gaze.targetY, gazeEase);
+    }
+
+    // Reduce saccade noise — only when not mouse-tracking, and softer overall
+    const saccadeScale = (mouseOverrideX !== null) ? 0 : 1;
+    const saccadeX = noise(t * 5, this.seed) * 0.03 * params.restlessness * saccadeScale;
+    const saccadeY = noise(t * 4.5, this.seed + 100) * 0.02 * params.restlessness * saccadeScale;
+
+    const gazeX = this.gaze.currentX + saccadeX + headShakeOffset;
+    const gazeY = this.gaze.currentY + saccadeY - breathY * 0.12;
+
+    // Blinking
+    let lidClose = params.lidBase;
+    if (params.blinkRate > 0) {
+      if (this.blink.blinkPhase > 0) {
+        this.blink.blinkPhase += (1/30) * 12;
+        if (this.blink.blinkPhase < 1) {
+          lidClose = Math.max(lidClose, smoothstep(this.blink.blinkPhase));
+        } else if (this.blink.blinkPhase < 1.3) {
+          lidClose = 1;
+        } else if (this.blink.blinkPhase < 2.3) {
+          lidClose = Math.max(lidClose, 1 - smoothstep(this.blink.blinkPhase - 1.3));
+        } else {
+          if (this.blink.isDouble && this.blink.doublePhase === 0) {
+            this.blink.doublePhase = 1;
+            this.blink.blinkPhase = 0.2;
+          } else {
+            this.blink.blinkPhase = 0;
+            this.blink.isDouble = false;
+            this.blink.doublePhase = 0;
+            const baseInterval = params.blinkRate * 1000;
+            this.blink.nextBlink = elapsed + baseInterval + (this.rng() - 0.5) * baseInterval * 0.6;
+          }
+        }
+      } else if (elapsed > this.blink.nextBlink) {
+        this.blink.blinkPhase = 0.01;
+        this.blink.isDouble = this.rng() < 0.2;
+        this.blink.doublePhase = 0;
+      }
+    }
+
+    // Expressions
+    if (elapsed > this.expr.nextChange) {
+      const r = this.rng();
+      const e = params.expressiveness;
+      if (r < 0.2) {
+        this.expr.targetBrow = 0; this.expr.targetSquint = 0; this.expr.targetBrowTilt = 0;
+      } else if (r < 0.4) {
+        this.expr.targetBrow = (0.25 + this.rng() * 0.5) * e;
+        this.expr.targetSquint = this.rng() * 0.12;
+      } else if (r < 0.6) {
+        this.expr.targetBrow = -(0.1 + this.rng() * 0.2) * e;
+        this.expr.targetSquint = (0.2 + this.rng() * 0.35) * e;
+      } else if (r < 0.8) {
+        this.expr.targetBrowTilt = (0.3 + this.rng() * 0.45) * e * (this.rng() < 0.5 ? 1 : -1);
+        this.expr.targetBrow = this.rng() * 0.15 * e;
+      } else {
+        this.expr.targetBrow = (0.2 + this.rng() * 0.35) * e;
+        this.expr.targetSquint = (0.05 + this.rng() * 0.15) * e;
+        this.expr.targetBrowTilt = this.rng() * 0.15 * e;
+      }
+      this.expr.nextChange = elapsed + 1500 + this.rng() * 4000;
+    }
+
+    const exprEase = 0.025 + params.expressiveness * 0.025;
+    this.expr.currentBrow = lerp(this.expr.currentBrow, this.expr.targetBrow + params.browBase, exprEase);
+    this.expr.currentSquint = lerp(this.expr.currentSquint, this.expr.targetSquint + params.squintBase, exprEase);
+    this.expr.currentBrowTilt = lerp(this.expr.currentBrowTilt, this.expr.targetBrowTilt + params.browTiltBase, exprEase);
+
+    // Micro-events
+    let eventLid = 0, eventBrow = 0, eventSquint = 0, eventBrowTilt = 0;
+    if (this.event.active) {
+      const ep = (elapsed - this.event.startTime) / this.event.duration;
+      if (ep >= 1) {
+        this.event.active = false;
+        this.event.nextEvent = elapsed + 5000 + this.rng() * 12000;
+      } else {
+        const intensity = Math.sin(ep * Math.PI);
+        switch (this.event.type) {
+          case 'surprise': eventBrow = intensity * 1.0; break;
+          case 'amused': eventBrow = intensity * 0.5; eventSquint = intensity * 0.3; break;
+          case 'ponder': eventBrow = -intensity * 0.35; eventBrowTilt = intensity * 0.45; break;
+          case 'focus': eventSquint = intensity * 0.2; eventBrow = -intensity * 0.15; break;
+        }
+      }
+    } else if (elapsed > this.event.nextEvent && params.eventFrequency > 0) {
+      if (this.rng() < params.eventFrequency) {
+        this.event.active = true;
+        this.event.startTime = elapsed;
+        const r = this.rng();
+        if (r < 0.3) { this.event.type = 'surprise'; this.event.duration = 600 + this.rng() * 500; }
+        else if (r < 0.55) { this.event.type = 'amused'; this.event.duration = 800 + this.rng() * 1200; }
+        else if (r < 0.8) { this.event.type = 'ponder'; this.event.duration = 1200 + this.rng() * 1000; }
+        else { this.event.type = 'focus'; this.event.duration = 1000 + this.rng() * 800; }
+      }
+      this.event.nextEvent = elapsed + 3000 + this.rng() * 8000;
+    }
+
+    // Click reaction override
+    let clickLid = 0, clickBrow = 0, clickSquint = 0;
+    if (this.clickReaction.active) {
+      const clickElapsed = elapsed - this.clickReaction.startTime;
+      if (clickElapsed < 1800) {
+        const phase = clickElapsed / 1800;
+        if (phase < 0.15) {
+          // Surprise — eyes wide, brows up
+          const surge = smoothstep(phase / 0.15);
+          clickBrow = surge * 1.2;
+          clickLid = -surge * 0.3; // negative = wider
+        } else if (phase < 0.4) {
+          // Hold surprise
+          clickBrow = 1.2 * (1 - (phase - 0.15) / 0.25 * 0.5);
+        } else if (phase < 0.7) {
+          // Happy squint
+          const happy = smoothstep((phase - 0.4) / 0.3);
+          clickSquint = happy * 0.5;
+          clickBrow = 0.3 * (1 - happy);
+        } else {
+          // Fade back to normal
+          const fade = (phase - 0.7) / 0.3;
+          clickSquint = 0.5 * (1 - fade);
+        }
+      } else {
+        this.clickReaction.active = false;
+      }
+    }
+
+    this.currentState = {
+      gazeX, gazeY,
+      lidClose: Math.max(0, Math.min(1, lidClose + eventLid + clickLid)),
+      browRaise: this.expr.currentBrow + eventBrow + clickBrow,
+      browTilt: this.expr.currentBrowTilt + eventBrowTilt,
+      squint: Math.max(0, this.expr.currentSquint + eventSquint + clickSquint),
+      breathY,
+    };
+  }
+
+  _startLoop() {
+    const loop = (now) => {
+      if (now - this.lastFrame >= 32) { // ~30fps
+        this.lastFrame = now;
+        this._tick(now);
+      }
+      this._rafId = requestAnimationFrame(loop);
+    };
+    this._rafId = requestAnimationFrame(loop);
+  }
+
+  _renderStatic() {
+    const fg = this._getPalette().fg;
+    this.faceGroup.setAttribute('transform', '');
+    this._renderEyes(REST_STATE, fg);
+    this._renderBrows(REST_STATE, fg);
+  }
+
+  destroy() {
+    if (this._rafId) cancelAnimationFrame(this._rafId);
+    if (this._onMouseMove) document.removeEventListener('mousemove', this._onMouseMove);
+  }
+}
+
+// Export for use
+window.AvatarAnimator = AvatarAnimator;
