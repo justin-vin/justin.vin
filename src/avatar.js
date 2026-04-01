@@ -185,10 +185,11 @@ class AvatarAnimator {
 
     this._buildSVG();
 
+    // Force an initial render so eyes are visible immediately
+    this._renderStatic();
+
     if (!this.prefersReducedMotion) {
       this._startLoop();
-    } else {
-      this._renderStatic();
     }
   }
 
