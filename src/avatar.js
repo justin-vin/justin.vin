@@ -514,7 +514,7 @@ class AvatarAnimator {
     const breathY = Math.sin(t / params.breathSpeed * Math.PI * 2) * 0.8;
 
     // Gaze — intentional movements, hold longer, less jitter
-    if (!this.mouse.tracking && elapsed > this.gaze.nextShift && elapsed > this.gaze.holdUntil) {
+    if (elapsed > this.gaze.nextShift && elapsed > this.gaze.holdUntil) {
       const r = this.rng();
       if (r < 0.25) {
         // Look somewhere specific
