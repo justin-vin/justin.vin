@@ -1,0 +1,126 @@
+---
+import { getCollection, render } from 'astro:content';
+import '../styles/global.css';
+
+export async function getStaticPaths() {
+	const posts = await getCollection('blog');
+	return posts.map((post) => ({
+		params: { slug: post.id },
+		props: post,
+	}));
+}
+
+const post = Astro.props;
+const { Content } = await render(post);
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+		<link rel="preload" href="/fonts/atkinson-regular.woff" as="font" type="font/woff" crossorigin />
+		<link rel="preload" href="/fonts/atkinson-bold.woff" as="font" type="font/woff" crossorigin />
+		<title>{post.data.title} — Justin</title>
+		<meta name="description" content={post.data.description} />
+	</head>
+	<body>
+		<main>
+			<article>
+				<a href="/" class="back">← Back</a>
+				<div class="post-header">
+					<time datetime={post.data.pubDate.toISOString()}>
+						{post.data.pubDate.toLocaleDateString('en-us', {
+							year: 'numeric',
+							month: 'long',
+							day: 'numeric',
+						})}
+					</time>
+					<h1>{post.data.title}</h1>
+				</div>
+				<div class="prose">
+					<Content />
+				</div>
+			</article>
+		</main>
+	</body>
+</html>
+
+<style>
+	main {
+		max-width: 720px;
+	}
+	.back {
+		display: inline-block;
+		margin-bottom: 2em;
+		font-size: 0.9em;
+	}
+	.post-header {
+		margin-bottom: 2em;
+	}
+	.post-header time {
+		color: var(--text-muted);
+		font-size: 0.85em;
+	}
+	.post-header h1 {
+		font-size: 2.2em;
+		margin: 0.25em 0 0;
+	}
+	.prose :global(h2) {
+		font-size: 1.4em;
+		margin-top: 2em;
+	}
+	.prose :global(h3) {
+		font-size: 1.2em;
+		margin-top: 1.5em;
+	}
+	.prose :global(p) {
+		margin-bottom: 1.5em;
+	}
+	.prose :global(pre) {
+		padding: 1.5em;
+		border-radius: 8px;
+		background-color: var(--surface);
+		border: 1px solid var(--border);
+		overflow-x: auto;
+		margin-bottom: 1.5em;
+	}
+	.prose :global(pre > code) {
+		all: unset;
+		font-family: var(--font-mono);
+		font-size: 0.85em;
+		color: var(--text-muted);
+	}
+	.prose :global(code) {
+		padding: 2px 5px;
+		background-color: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		font-family: var(--font-mono);
+		font-size: 0.85em;
+		color: var(--accent);
+	}
+	.prose :global(blockquote) {
+		border-left: 3px solid var(--accent);
+		padding: 0 0 0 20px;
+		margin: 0 0 1.5em;
+		font-size: 1.1em;
+		color: var(--text-muted);
+	}
+	.prose :global(ul), .prose :global(ol) {
+		margin-bottom: 1.5em;
+		padding-left: 1.5em;
+	}
+	.prose :global(li) {
+		margin-bottom: 0.5em;
+	}
+	.prose :global(hr) {
+		border: none;
+		border-top: 1px solid var(--border);
+		margin: 2em 0;
+	}
+</style>
