@@ -2,7 +2,7 @@
 title: 'Agent Mindsets'
 description: 'What happens when you split the concept of an agent into infrastructure and identity — and only share the identity.'
 pubDate: 'Apr 04 2026'
-heroImage: '/images/blog.jpg'
+heroImage: '/images/agent-mindsets.png'
 ---
 
 [OpenClaw](https://openclaw.ai) is an open-source platform for running AI agents. You define agents in a config file — each one gets a workspace, memory files, tool access, and channel bindings that route messages to them. An agent bound to a Discord channel responds to everything posted there. Threads inherit the binding. That's the basics.
