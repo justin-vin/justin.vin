@@ -7,8 +7,8 @@
 // ── Fixed Identity ──────────────────────────────────────────────────
 
 const STEEL_BLUE = {
-  light: { bg: '#A9B7D4', fg: '#2D3D5C' },
-  dark:  { bg: '#A9B7D4', fg: '#2D3D5C' },
+  light: { bg: '#6383C4', fg: '#16294F' },
+  dark:  { bg: '#6383C4', fg: '#16294F' },
 };
 
 const DEAD_PALETTE = {
